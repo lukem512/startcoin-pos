@@ -30,7 +30,7 @@
       document.getElementById("qrcode-request").innerHTML = "";
 
       // craft string to encode in QR
-      var qrstr = "startcoin:" + address;
+      var qrstr =  address;
       var argc = 0;
 
       if (amount) {
@@ -219,27 +219,19 @@
     var convertToSTART = function(amount, currency, callback) {
       // Get START price in BTC
       createAndHandleRequest("https://bittrex.com/api/v1.1/public/getticker?market=btc-start", function(responseSTART) {
-        // {"success":true,"message":"","result":{"Bid":0.00011503,"Ask":0.00011523,"Last":0.00011503}}
-        console.log("Last START price was " + responseSTART.Last);
-        var amountBTC = amount * responseSTART.Last;
 
         // Get BTC price in GBP
         createAndHandleRequest("https://api.bitcoinaverage.com/ticker/global/all", function(responseBTC) {
-          // {
-          //   "AED": {
-          //     "ask": 959.86,
-          //     "bid": 959.1,
-          //     "last": 959.63,
-          //     "timestamp": "Tue, 24 Mar 2015 10:09:07 -0000",
-          //     "volume_btc": 0.0,
-          //     "volume_percent": 0.0
-          //   },
-          //   ...
-          // }
           console.log("Last BTC price was " + responseBTC[currency].last);
+          console.log("Last START price was " + responseSTART.result.Last);
 
-          // Convert!
-          callback(amountBTC * responseBTC[currency].last);
+          var totalBTC = amount / responseBTC[currency].last;
+
+          console.log(totalBTC  / responseSTART.result.Last + " START in total");
+         
+          var totalStart = totalBTC  / responseSTART.result.Last;
+         
+          callback(totalStart.toFixed(8));
           return;
         });
       });
