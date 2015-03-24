@@ -1,0 +1,287 @@
+<html>
+<head>
+  <title>StartCOIN Payment Watcher</title>
+
+  <!-- qrencode.js -->
+  <script src="js/qrencodejs/qrencode.js"></script>
+
+  <!-- socket.io -->
+  <script src="js/socketio/socket.io-1.3.4.js"></script>
+
+  <!-- startcore -->
+  <script src="js/startcore/bundle.js"></script>
+
+  <!-- Set up UI -->
+  <script>
+    var setAddressLabel = function(address) {
+      document.getElementById("startcoin-explorer-hyperlink").innerHTML = address;
+      document.getElementById("startcoin-explorer-hyperlink").href = "http://explorer.startcoin.org/address/" + address;
+    }
+
+    var setAmountLabel = function(amount) {
+      document.getElementById("amount-label").innerHTML = amount + " START";
+    }
+  </script>
+
+  <!-- Generate QRCode -->
+  <script>
+    var createQRCode = function(address, amount, label, message) {
+      // clear old QR
+      document.getElementById("qrcode-request").innerHTML = "";
+
+      // craft string to encode in QR
+      var qrstr = "startcoin:" + address;
+      var argc = 0;
+
+      if (amount) {
+        if (argc == 0)
+          qrstr += "?"
+        else 
+          qrstr += "&";
+        qrstr += ("amount=" + amount);
+        argc++;
+      }
+
+      if (label)  {
+        if (argc == 0)
+          qrstr += "?"
+        else 
+          qrstr += "&";
+        qrstr += ("label=" + encodeURIComponent(label));
+        argc++;
+      }
+
+      if (message) {
+        if (argc == 0)
+          qrstr += "?"
+        else 
+          qrstr += "&";
+        qrstr += ("message=" + encodeURIComponent(message));
+        argc++;
+      }
+
+      // create the new QR
+      new QRCode(document.getElementById("qrcode-request"), qrstr);
+    }
+  </script>
+  <!-- End of Generate QRCode -->
+
+  <!-- Watch for payment -->
+  <script>
+    // Create an XML request
+    var createRequest = function() {
+      var result = null;
+      if (window.XMLHttpRequest) {
+        // FireFox, Safari, etc.
+        result = new XMLHttpRequest();
+        if (typeof result.overrideMimeType != "undefined") {
+          result.overrideMimeType("text/xml"); // Or anything else
+        }
+      }
+      else if (window.ActiveXObject) {
+        // MSIE
+        result = new ActiveXObject("Microsoft.XMLHTTP");
+      } 
+      else {
+        // No can do
+        console.error("Cannot create XML HTTP request. Please use a newer browser.");
+      }
+      return result;
+    }
+
+    // Handle incoming data by passing it, as an object, to a callback
+    var createAndHandleRequest = function(url, callback) {
+        var req = createRequest();
+        req.onreadystatechange = function() {
+          // switch on state
+          if (req.readyState != 4) {
+            // waiting...
+            return;
+          }
+          if (req.status != 200) {
+            console.error("Error code 200");
+            return;
+          }
+          // success parse results
+          eval("var resp = ("+req.responseText+")");
+          callback(resp);
+        };
+        req.open("GET", url, true);
+        req.send();
+    }
+
+    // Retrieve transaction information, given a TXID
+    var getTx = function(txid, callback) {
+        createAndHandleRequest("http://explorer.startcoin.org/api/tx/"+txid, callback);
+    }
+
+    // Retrieve block information, given a hash
+    var getBlock = function(hash, callback) {
+        createAndHandleRequest("http://explorer.startcoin.org/api/block/"+hash, callback);
+    }
+
+    // Watch for payment to the specified address
+    var watchForPayment = function(address, amount, confirmations) {
+      /*
+        Array of objects in the form:
+          {
+            txid: "",
+            amount: 0,
+            confirmations: 0
+          }
+      */
+      var transactions = [];
+
+      // Amount of invoice paid
+      var amountPaid = 0;
+
+      // Open socket to StartCOIN Explorer
+      var socket = io("http://direct.insight2.startcoin.org/");
+
+      // Join the room once it's connected
+      socket.on("connect", function() {
+        // Join the room.
+        socket.emit("subscribe", "inv");
+      });
+
+      // Watch for new transactions
+      socket.on("tx", function(data) {
+        // New transaction received
+        // Wait a few seconds for Insight to catch up
+        window.setTimeout(function(){
+          getTx(data.txid, function(response) {
+            var i = 0;
+            for (i = 0; i < response.vout.length; i++) {
+              if (response.vout[i].scriptPubKey.addresses[0] == address) {
+                // Transaction to invoice address
+                console.log("Payment transaction received in " + response.txid + " for " + response.vout[i].value);
+                var transaction = {
+                  txid: response.txid,
+                  value: parseFloat(response.vout[i].value),
+                  confirmations: 0
+                };
+                transactions.push(transaction);
+              }
+            }
+          }, 5000);
+        });
+      });
+
+      // Watch for new blocks
+      socket.on("block", function(hash) {
+        // New block received
+        // Wait a few seconds for Insight to catch up
+        window.setTimeout(function(){
+          getBlock(hash, function(response) {
+            var i = 0, j = 0;
+            for (i = 0; i < response.tx.length; i++) {
+              for (j = 0; j < transactions.length; j++) {
+                if (response.tx[i] == transactions[j].txid) {
+                  console.log("Incrementing confirmations for transaction " + transactions[j].txid);
+                  transactions[j].confirmations++;
+                  if (transactions[j].confirmations == confirmations) {
+                    amountPaid += transactions[j].value;
+                    console.log("Confirming payment of " + transactions[j].value + ". Total paid is now " + amountPaid);
+                  }
+                }
+              }
+            }
+            if (amountPaid >= amount) {
+              console.log("Payment complete!");
+              // Unsubscribe from socket io to save resources
+              socket.removeAllListeners("tx");
+              socket.removeAllListeners("block");
+            }
+          });
+        }, 5000);
+      });
+    }
+  </script>
+  <!-- End of watch for payment -->
+
+  <!-- Generate address -->
+  <script>
+    var bitcore = require('bitcore');
+    var Key = bitcore.Key;
+    var Address = bitcore.Address;
+
+    var generateAddress = function() {
+      var newKey = Key.generateSync();
+      var address = Address.fromKey(newKey, "startcoin");
+      console.log("Generated new address: " + address);
+      return address + "";
+    }
+  </script>
+  <!-- End of generate address -->
+
+  <!-- Currency conversion -->
+  <script>
+    var convertToSTART = function(amount, currency, callback) {
+      // Get START price in BTC
+      createAndHandleRequest("https://bittrex.com/api/v1.1/public/getticker?market=btc-start", function(responseSTART) {
+        // {"success":true,"message":"","result":{"Bid":0.00011503,"Ask":0.00011523,"Last":0.00011503}}
+        console.log("Last START price was " + responseSTART.Last);
+        var amountBTC = amount * responseSTART.Last;
+
+        // Get BTC price in GBP
+        createAndHandleRequest("https://api.bitcoinaverage.com/ticker/global/all", function(responseBTC) {
+          // {
+          //   "AED": {
+          //     "ask": 959.86,
+          //     "bid": 959.1,
+          //     "last": 959.63,
+          //     "timestamp": "Tue, 24 Mar 2015 10:09:07 -0000",
+          //     "volume_btc": 0.0,
+          //     "volume_percent": 0.0
+          //   },
+          //   ...
+          // }
+          console.log("Last BTC price was " + responseBTC[currency].last);
+
+          // Convert!
+          callback(amountBTC * responseBTC[currency].last);
+          return;
+        });
+      });
+    }
+  </script>
+  <!-- End of currency conversion -->
+
+  <!-- Page setup -->
+  <script>
+    var SAFE_CONFIRMATIONS = 1;
+
+    var setup = function() {
+      // Generate new address
+      var address = generateAddress();
+
+      // Convert GBP value to START
+      var gbpAmount = 0.99;
+
+      convertToSTART(gbpAmount, "GBP", function(startAmount){
+        // Generate QRCode
+        createQRCode(address, startAmount);
+
+        // Populate labels, hyperlink
+        setAmountLabel(startAmount);
+        setAddressLabel(address);
+
+        // Now, watch for payment
+        watchForPayment(address, startAmount, SAFE_CONFIRMATIONS);
+      });
+    }
+  </script>
+  <!-- End of page setup -->
+</head>
+<body onLoad="setup()">
+  <div>
+    <div id="amount-label"></div>
+    <div id="qrcode-request" class="qrcode"></div>
+    <div id="startcoin-address-container">
+      <div id="startcoin-address-label">
+        <a id="startcoin-explorer-hyperlink" href="#" target="_blank"></a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
